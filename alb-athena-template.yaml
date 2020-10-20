@@ -1,0 +1,227 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: |
+  Creates Athena(Glue) External Tables for ALB logs and named queries as examples, instantly query-able
+Parameters:
+  ALBLogBucket: 
+    Type: String
+    Description: >
+      The name of the S3 bucket you are delivering ALB access logs to
+  GlueALBLogsDB:
+    Type: String
+    Default: alblogsdb
+    Description: >
+      Glue database name to be created, must be lower-case
+  GlueALBLogsTable:
+    Type: String
+    Default: alblogstable
+    Description: >
+      Glue table name to be created, must be lower-case
+Resources:
+  ALBLogsDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Description: 'ALBLogsDatabase'
+        Name: !Ref GlueALBLogsDB
+  ALBLogsTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref ALBLogsDatabase
+      TableInput:
+        Name: !Ref GlueALBLogsTable
+        Description: 'Gzip logs delivered by Amazon ALB in csv format'
+        PartitionKeys: []
+        TableType: EXTERNAL_TABLE
+        StorageDescriptor:
+          Columns:
+            - Name: type
+              Type: string
+            - Name: time
+              Type: string
+            - Name: elb
+              Type: string
+            - Name: client_ip
+              Type: string
+            - Name: client_port
+              Type: int
+            - Name: target_ip
+              Type: string
+            - Name: target_port
+              Type: int
+            - Name: request_processing_time
+              Type: double
+            - Name: target_processing_time
+              Type: double
+            - Name: response_processing_time
+              Type: double
+            - Name: elb_status_code
+              Type: string
+            - Name: target_status_code
+              Type: string
+            - Name: received_bytes
+              Type: bigint
+            - Name: sent_bytes
+              Type: bigint
+            - Name: request_verb
+              Type: string
+            - Name: request_url
+              Type: string
+            - Name: request_proto
+              Type: string
+            - Name: user_agent
+              Type: string
+            - Name: ssl_cipher
+              Type: string
+            - Name: ssl_protocol
+              Type: string
+            - Name: target_group_arn
+              Type: string
+            - Name: trace_id
+              Type: string
+            - Name: domain_name
+              Type: string
+            - Name: chosen_cert_arn
+              Type: string
+            - Name: matched_rule_priority
+              Type: string
+            - Name: request_creation_time
+              Type: string
+            - Name: actions_executed
+              Type: string
+            - Name: redirect_url
+              Type: string
+            - Name: lambda_error_reason
+              Type: string
+            - Name: target_port_list
+              Type: string
+            - Name: target_status_code_list
+              Type: string
+            - Name: classification
+              Type: string
+            - Name: classification_reason
+              Type: string
+          OutputFormat: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+          InputFormat: org.apache.hadoop.mapred.TextInputFormat
+          Location: !Sub "s3://${ALBLogBucket}/AWSLogs/${AWS::AccountId}/elasticloadbalancing/${AWS::Region}/"
+          SerdeInfo:
+            Parameters:
+              field.delim": "\t"
+              serialization.format: 1
+              input.regex: '([^ ]*) ([^ ]*) ([^ ]*) ([^ ]*):([0-9]*) ([^ ]*)[:-]([0-9]*) ([-.0-9]*) ([-.0-9]*) ([-.0-9]*) (|[-0-9]*) (-|[-0-9]*) ([-0-9]*) ([-0-9]*) \"([^ ]*) ([^ ]*) (- |[^ ]*)\" \"([^\"]*)\" ([A-Z0-9-]+) ([A-Za-z0-9.-]*) ([^ ]*) \"([^\"]*)\" \"([^\"]*)\" \"([^\"]*)\" ([-.0-9]*) ([^ ]*) \"([^\"]*)\" \"([^\"]*)\" \"([^ ]*)\" \"([^\s]+?)\" \"([^\s]+)\" \"([^ ]*)\" \"([^ ]*)\"'
+            SerializationLibrary: org.apache.hadoop.hive.serde2.RegexSerDe
+  TopRequestedBytesByIp:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Database: !Ref GlueALBLogsDB
+      Description: "Find the top 5 IP that requested most bytes from your ALB"
+      Name: "Athena_ALB_Get_Top_5_Ip_By_Bytes"
+      QueryString: !Sub |
+                        -- Select Top 5 client IP that requested most bytes to your ALB endpoint
+                        
+                        SELECT client_ip, SUM(sent_bytes) AS Requested_Bytes
+                        FROM ${GlueALBLogsDB}.${GlueALBLogsTable}
+                        GROUP BY client_ip
+                        ORDER BY Requested_Bytes DESC
+                        LIMIT 5;
+  TopUserDeviceInAMonth:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Database: !Ref GlueALBLogsDB
+      Description: "Find the top 10 user device for your ALB endpoint in a given month"
+      Name: "Athena_ALB_Get_Top_10_User_Device_By_Requests"
+      QueryString: !Sub |
+                        -- Selct top 10 user agents in September
+
+                        SELECT user_agent, COUNT(*) AS NUMBER_OF_REQUEST
+                        FROM ${GlueALBLogsDB}.${GlueALBLogsTable}
+                        WHERE parse_datetime(time,'yyyy-MM-dd''T''HH:mm:ss.SSSSSS''Z') 
+                            BETWEEN parse_datetime('2020-09-01-12:00:00','yyyy-MM-dd-HH:mm:ss') 
+                            AND parse_datetime('2020-09-30-00:00:00','yyyy-MM-dd-HH:mm:ss') 
+                        GROUP BY user_agent
+                        ORDER BY NUMBER_OF_REQUEST DESC
+                        LIMIT 10;
+  CreateDatePartitionedTable:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Database: !Ref GlueALBLogsDB
+      Description: "Create a table which is partitioned by date with projection"
+      Name: "Athena_ALB_Create_Date_Partiioned_Table"
+      QueryString: !Sub |
+                        -- Create a table which is partitioned by date with projection, this will make date-based queries more cost-efficient
+                        
+                        CREATE EXTERNAL TABLE IF NOT EXISTS alb_logs_partitioned (
+                          type string,
+                          time string,
+                          elb string,
+                          client_ip string,
+                          client_port int,
+                          target_ip string,
+                          target_port int,
+                          request_processing_time double,
+                          target_processing_time double,
+                          response_processing_time double,
+                          elb_status_code string,
+                          target_status_code string,
+                          received_bytes bigint,
+                          sent_bytes bigint,
+                          request_verb string,
+                          request_url string,
+                          request_proto string,
+                          user_agent string,
+                          ssl_cipher string,
+                          ssl_protocol string,
+                          target_group_arn string,
+                          trace_id string,
+                          domain_name string,
+                          chosen_cert_arn string,
+                          matched_rule_priority string,
+                          request_creation_time string,
+                          actions_executed string,
+                          redirect_url string,
+                          lambda_error_reason string,
+                          target_port_list string,
+                          target_status_code_list string,
+                          classification string,
+                          classification_reason string
+                          )
+                        PARTITIONED BY (
+                          `date` string
+                        )
+                        ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.RegexSerDe'
+                        WITH SERDEPROPERTIES (
+                        'serialization.format' = '1',
+                        'input.regex' = 
+                        '([^ ]*) ([^ ]*) ([^ ]*) ([^ ]*):([0-9]*) ([^ ]*)[:-]([0-9]*) ([-.0-9]*) ([-.0-9]*) ([-.0-9]*) (|[-0-9]*) (-|[-0-9]*) ([-0-9]*) ([-0-9]*) \"([^ ]*) ([^ ]*) (- |[^ ]*)\" \"([^\"]*)\" ([A-Z0-9-]+) ([A-Za-z0-9.-]*) ([^ ]*) \"([^\"]*)\" \"([^\"]*)\" \"([^\"]*)\" ([-.0-9]*) ([^ ]*) \"([^\"]*)\" \"([^\"]*)\" \"([^ ]*)\" \"([^\s]+?)\" \"([^\s]+)\" \"([^ ]*)\" \"([^ ]*)\"')
+                        LOCATION 's3://${ALBLogBucket}/AWSLogs/${AWS::AccountId}/elasticloadbalancing/${AWS::Region}'
+                        TBLPROPERTIES (
+                          'projection.enabled' = 'true',
+                          'projection.date.type' = 'date',
+                          'projection.date.range' = 'NOW-5YEARS,NOW',
+                          'projection.date.format' = 'yyyy/MM/dd',
+                          'projection.date.interval' = '1',
+                          'projection.date.interval.unit' = 'HOURS',
+                          'storage.location.template' = 's3://${ALBLogBucket}/AWSLogs/${AWS::AccountId}/elasticloadbalancing/${AWS::Region}/${!date}',
+                          'classification'='csv',
+                          'compressionType'='gzip',
+                          'typeOfData'='file'
+                        );
+  QueryDatePartitionedTableByPage:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Database: !Ref GlueALBLogsDB
+      Description: "Find the top visited sites on a particular day, using date-partitioned table"
+      Name: "Athena_ALB_Get_Top_Sites_In_A_Day"
+      QueryString: !Sub |
+                        -- Make sure you run the query Athena_ALB_Create_Date_Partiioned_Table first
+                        -- Selct most visited sites for a particular day, since the table is partitioned by date, we scan much less data and we pay much less
+
+                        SELECT request_url, COUNT(*)
+                        FROM alb_logs_partitioned
+                        WHERE date = '2020/09/22'
+                        GROUP BY request_url;
+Outputs:
+  ALBAthenaTable:
+    Description: Glue Table created for analyzing ALB Logs
+    Value: !Ref ALBLogsTable

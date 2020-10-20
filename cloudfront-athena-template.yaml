@@ -1,0 +1,164 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: |
+  Creates Athena(Glue) External Tables for CloudFront logsand named queries as examples, instantly query-able
+Parameters:
+  CloudFrontLogBucket: 
+    Type: String
+    Description: >
+      The name of the S3 bucket you are delivering CloudFront access logs to
+  CloudFrontLogBucketPrefix:
+    Type: String
+    Default: cloudfront
+    Description: >
+      The prefix specified in CloudFront log bucket settings, without trailing slash
+  GlueCloudFrontLogsDB:
+    Type: String
+    Default: cloudfrontlogsdb
+    Description: >
+      Glue database name to be created, must be lower-case
+  GlueCloudFrontLogsTable:
+    Type: String
+    Default: cloudfrontlogstable
+    Description: >
+      Glue table name to be created, must be lower-case
+Resources:
+  CloudFrontLogsDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Description: 'CloudFrontLogsDatabase'
+        Name: !Ref GlueCloudFrontLogsDB
+  CloudFrontLogsTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref CloudFrontLogsDatabase
+      TableInput:
+        Name: !Ref GlueCloudFrontLogsTable
+        Description: 'Gzip logs delivered by Amazon CloudFront in csv format'
+        PartitionKeys: []
+        TableType: EXTERNAL_TABLE
+        Parameters: { "skip.header.line.count": "2" }
+        StorageDescriptor:
+          Columns:
+            - Name: date
+              Type: date
+            - Name: time
+              Type: string
+            - Name: location
+              Type: string
+            - Name: bytes
+              Type: bigint
+            - Name: request_ip
+              Type: string
+            - Name: method
+              Type: string
+            - Name: host
+              Type: string
+            - Name: uri
+              Type: string
+            - Name: status
+              Type: int
+            - Name: referrer
+              Type: string
+            - Name: user_agent
+              Type: string
+            - Name: query_string
+              Type: string
+            - Name: cookie
+              Type: string
+            - Name: result_type
+              Type: string
+            - Name: request_id
+              Type: string
+            - Name: host_header
+              Type: string
+            - Name: request_protocol
+              Type: string
+            - Name: request_bytes
+              Type: bigint
+            - Name: time_taken
+              Type: float
+            - Name: xforwarded_for
+              Type: string
+            - Name: ssl_protocol
+              Type: string
+            - Name: ssl_cipher
+              Type: string
+            - Name: response_result_type
+              Type: string
+            - Name: http_version
+              Type: string
+            - Name: fle_status
+              Type: string
+            - Name: fle_encrypted_fields
+              Type: int
+            - Name: c_port
+              Type: int
+            - Name: time_to_first_byte
+              Type: float
+            - Name: x_edge_detailed_result_type
+              Type: string
+            - Name: sc_content_type
+              Type: string
+            - Name: sc_content_len
+              Type: bigint
+            - Name: sc_range_start
+              Type: bigint
+            - Name: sc_range_end
+              Type: bigint
+          OutputFormat: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+          InputFormat: org.apache.hadoop.mapred.TextInputFormat
+          Location: !Sub "s3://${CloudFrontLogBucket}/${CloudFrontLogBucketPrefix}/"
+          SerdeInfo:
+            Parameters:
+              field.delim": "\t"
+              serialization.format: "\t"
+            SerializationLibrary: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
+  GetSumBytesByIp:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Database: !Ref GlueCloudFrontLogsDB
+      Description: "Find the top 5 IP that requested most bytes from your CloudFront Distribution"
+      Name: "Athena_CloudFront_Get_Top_5_Ip_By_Bytes"
+      QueryString: !Sub |
+                        -- Top 5 IP address taht requested most bytes from your CloudFront Distribution
+                        
+                        SELECT request_ip, SUM(bytes) AS Bytes_Count
+                        FROM ${GlueCloudFrontLogsDB}.${GlueCloudFrontLogsTable}
+                        GROUP BY request_ip
+                        ORDER BY Bytes_Count DESC
+                        LIMIT 5;
+  GetMostViewedPage:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Database: !Ref GlueCloudFrontLogsDB
+      Description: "Find the top 100 viewed pages from your CloudFront Distribution"
+      Name: "Athena_CloudFront_Get_Top_100_Viewed_Pages"
+      QueryString: !Sub |
+                        -- Top 100 most visited page for your CloudFront Distribution
+
+                        SELECT uri, COUNT(*) hits
+                        FROM ${GlueCloudFrontLogsDB}.${GlueCloudFrontLogsTable}
+                        WHERE status = 200 AND uri LIKE '%/'
+                        GROUP BY uri ORDER BY hits DESC
+                        LIMIT 100;
+  TopUserDeviceByDay:
+    Type: AWS::Athena::NamedQuery
+    Properties:
+      Database: !Ref GlueCloudFrontLogsDB
+      Description: "Find the top user device that viewed your page in a given date range"
+      Name: "Athena_CloudFront_Get_Top_User_Device_By_Date"
+      QueryString: !Sub |
+                        -- Top 100 user devices
+
+                        SELECT user_agent, COUNT(*) hits
+                        FROM ${GlueCloudFrontLogsDB}.${GlueCloudFrontLogsTable}
+                        WHERE status = 200 AND uri LIKE '%/'
+                        GROUP BY user_agent ORDER BY hits DESC
+                        LIMIT 100;
+Outputs:
+  CloudFrontAthenaTable:
+    Description: Glue Table created for analyzing CloudFront Logs
+    Value: !Ref CloudFrontLogsTable
